@@ -18,14 +18,16 @@ pycom.heartbeat(False)
 
 
 # Assign the Station ID number (0-99)
-station_id = "30"
+station_id = "50"
 
 # global LTE object
-lte = LTE()
+#lte = LTE()
+#print(lte.imei())  # Print the GPY IMEI
+#print(lte.iccid())  # Print the SIM Card ICCID
 
 # For testing only - Use a WiFi object instead of an LTE object
 # Establish the WiFi object as a station; External antenna
-#wlan = WLAN(mode=WLAN.STA,antenna=WLAN.INT_ANT,max_tx_pwr=25)  #range is 8 to 78
+wlan = WLAN(mode=WLAN.STA,antenna=WLAN.INT_ANT,max_tx_pwr=20)  #range is 8 to 78
 
 i2c = I2C(0, I2C.MASTER, baudrate=100000)  # use default pins P9 and P10 for I2C
 ds3231 = DS3231(i2c)
@@ -41,6 +43,7 @@ rtc = RTC()
 
 # URL string.  Transmit the encoded image to the server
 url = "http://gaepd.janusresearch.com:8555/file/base64"
+#url = "http://water.roeber.dev:80/file/base64"
 
 # HTTP Header string
 headers = {
@@ -83,7 +86,7 @@ gpy_enable_vmeas.value(0)
 ############ Begin function definitions ####################
 
 def connect_to_wifi():
-    wlan.connect(ssid='polaris', auth=(WLAN.WPA2, '<password>'))
+    wlan.connect(ssid='polaris', auth=(WLAN.WPA2, 'gALAtians_03:20'))
     #wlan.connect(ssid='JRG Guest', auth=(WLAN.WPA2, '600guest'), timeout=5000)
     while not wlan.isconnected():
         machine.idle()
@@ -94,7 +97,7 @@ def attach_to_lte():
     # Initialize the return value
     return_val = 0
 
-    # First, enable the module radio functionality. and attach to the LTE network
+    # First, enable the module radio functionality and attach to the LTE network
     attach_try = 0
     while attach_try < 3:
         lte.init() 
@@ -106,9 +109,9 @@ def attach_to_lte():
         while attempt < 20:
             if not lte.isattached():
                 attempt += 1
-                utime.sleep(1)
                 print('.',end='')
                 print(lte.send_at_cmd('AT!="fsm"'))         # get the System FSM
+                utime.sleep(2)
             else:
                 print("attached!")
                 break
@@ -118,16 +121,15 @@ def attach_to_lte():
             break
         else:
             attach_try += 1.0
-            #lte.detach(reset=False)
-            utime.sleep(5)
+            lte.reset()   # Reset the cellular modem
+            utime.sleep(7)  #Reset can take up to 5 seconds
             print("Attempt #%d failed. Try attaching again!" %(attach_try))
     
     # If the GPy failed to connect to the LTE network return an error code
     if not lte.isattached():
-        lte.detach(reset=False)
         print("Failed to connect to the LTE network")
     
-    return return_val          # return_val is 0 (from initialization)
+    return return_val          # return_val is 0 (from initialization) to indicate the attach failed
 
 
 def connect_to_lte_data():
@@ -160,7 +162,6 @@ def connect_to_lte_data():
             break
         else:
             connect_try += 1.0
-            lte.disconnect()
             utime.sleep(5)
             print("Try the data connection again!")
 
@@ -171,7 +172,6 @@ def connect_to_lte_data():
     return return_val
 
     #print(socket.getaddrinfo('pybytes.pycom.io', 80))  # For testing.  Uncomment this line to confirm the network socket call
-
 
 
 def process_picture(picture_len_int):
@@ -196,11 +196,73 @@ def process_picture(picture_len_int):
     #data_file = "{\"base64File\": \"" +  b64_picture_bytes.decode('ascii') + "\", \"id\": " + station_id + ", \"timeStamp\": \"" + time_stamp + "\"}"
     data_file = "{\"voltage\": " + voltage_level + ",\"base64File\": \"" +  b64_picture_bytes.decode('ascii') + "\", \"id\": " + station_id + ", \"timeStamp\": \"" + time_stamp + "\"}" 
 
+    # Post the picture using the uPython urequests library
+    """
     try:
+        wdt=machine.WDT(timeout=5*1000)
         response = requests.post(url, headers=headers, data=data_file)
         print(response.text)  # Prints the return filename from the server in json format
+        response.close()
     except Exception as e:
         print(e)
+    """
+
+
+
+    # Post the picture using the uPython usockets library
+    # Host at JRG, Inc
+    host = "gaepd.janusresearch.com"
+    port = 8555
+    server_address = socket.getaddrinfo('gaepd.janusresearch.com', 8555)[0][-1]
+
+    # Host on Digital Ocean
+    #host = "water.roeber.dev"
+    #port = 80
+    #server_address = socket.getaddrinfo('water.roeber.dev', 80)[0][-1]
+
+
+    headers = """\
+POST /file/base64 HTTP/1.1\r
+Content-Type: {content_type}\r
+Content-Length: {content_length}\r
+Host: {host}\r
+\r\n"""
+
+    header_bytes = headers.format(
+        content_type="application/json",
+        content_length=len(data_file),
+        host=str(host) + ":" + str(port)
+    ).encode('iso-8859-1')
+
+    payload = header_bytes + data_file
+
+    #print(server_address)
+    #print(header_bytes)
+
+    #s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s = socket.socket()
+    s.setblocking(False)
+    s.settimeout(15)
+
+    print("Connect to server")
+    s.connect(server_address)
+
+    print("Ready to send")
+    s.sendall(payload)
+    print(s.recv(1024))  # Print the data that the server returns
+
+"""
+    s = socket.socket()
+    s.setblocking(False)
+    try:
+        s.connect(server_address)
+    except OSError as e:
+        if str(e) == '119':   # For non-Blocking sockets 119 is EINPROGRESS
+            print("Socket connection in progress")
+        else:
+            raise e
+"""
+    
 
 
 def battery_voltage():
@@ -329,13 +391,16 @@ def ds3231_int_handler(arg):
 def shutdown():
     # Delay.  Expect that the RTC will reset the GPY before this delay expires.
     #    Delay 6hrs and 15 minutes (22500 seconds) assuming that the RTC interrupts every 6 hours
+    #machine.deepsleep(22500000)
     utime.sleep(22500)
 
     #For testing only - a short sleep time
-    #utime.sleep(60)
+    #utime.sleep(120)
+    #machine.deepsleep(90000)   # 1000 * number of seconds.  For 1 second, deepsleep(1000)
+    #utime.sleep(90)
     
     # Pull the RESET pin LOW to reset the GPy
-    gpy_reset_trigger.value(0)
+    gpy_reset()
 
 #########################################################
 ################ End function definitions ###############
@@ -405,8 +470,9 @@ ds3231_trigger.callback(Pin.IRQ_FALLING, ds3231_int_handler)
 
 
 #################################### Network Connection #############################################################
-#connect_to_wifi()
+connect_to_wifi()
 
+"""
 attached = 0
 attached = attach_to_lte()
 
@@ -419,7 +485,7 @@ connected = connect_to_lte_data()
 
 if not connected:
     shutdown()      # Wait for the next scheduled reset
-
+"""
 
 ################################### RTC Synchronization with NTP server ##################################################
 # Synchronize the DS3231 clock with NTP on the first day of the month
@@ -551,8 +617,8 @@ print('end transfer')
 
 
 # Picture transfer is complete so disconnect from the network
-#wlan.disconnect()
-lte.deinit(detach=True,reset=False)
+wlan.disconnect()
+#lte.deinit(detach=True,reset=False)
 
 print("Network disconnected, going to sleep")
 
