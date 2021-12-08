@@ -16,7 +16,6 @@ pycom.heartbeat(False)
 
 # Assign the Station ID number (0-99)
 station_id = "50"
-<<<<<<< HEAD
 
 timezone = -5 # est: -5   edt: -4
 
@@ -27,17 +26,6 @@ lte = LTE()
 
 # Establish the WiFi object as a station; Internal antenna
 #wlan = WLAN(mode=WLAN.STA,antenna=WLAN.INT_ANT,max_tx_pwr=20)  #range is 8 to 78
-=======
-
-# global LTE object
-#lte = LTE()
-#print(lte.imei())  # Print the GPY IMEI
-#print(lte.iccid())  # Print the SIM Card ICCID
-
-# For testing only - Use a WiFi object instead of an LTE object
-# Establish the WiFi object as a station; External antenna
-wlan = WLAN(mode=WLAN.STA,antenna=WLAN.INT_ANT,max_tx_pwr=20)  #range is 8 to 78
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
 
 i2c = I2C(0, I2C.MASTER, baudrate=100000)  # use default pins P9 and P10 for I2C
 ds3231 = DS3231(i2c)
@@ -47,26 +35,6 @@ ds3231 = DS3231(i2c)
 #    For now, the ESP32-CAM transmits to the GPy at 38400 bps.  This can probably be increased.
 uart = UART(1, baudrate=38400)
 
-<<<<<<< HEAD
-=======
-# Real time clock object
-rtc = RTC()
-
-
-# URL string.  Transmit the encoded image to the server
-url = "http://gaepd.janusresearch.com:8555/file/base64"
-#url = "http://water.roeber.dev:80/file/base64"
-
-# HTTP Header string
-headers = {
-    'Content-Type': 'application/json',
-}
-
-# Real time clock time zone offset
-est_timezone = -5   # Eastern standard time is GMT - 5
-edt_timezone = -4   # Eastern daylight time is GMT - 4
-
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
 
 # Define the trigger pin for waking up the ESP32-CAM
 #    When this pin is pulled LOW for approx 1ms
@@ -146,13 +114,8 @@ def set_next_alarm():
 
 
 def connect_to_wifi():
-<<<<<<< HEAD
     #wlan.connect(ssid='polaris', auth=(WLAN.WPA2, 'gALAtians_03:20'))
     wlan.connect(ssid='JRG Guest', auth=(WLAN.WPA2, '600guest'), timeout=5000)
-=======
-    wlan.connect(ssid='polaris', auth=(WLAN.WPA2, 'gALAtians_03:20'))
-    #wlan.connect(ssid='JRG Guest', auth=(WLAN.WPA2, '600guest'), timeout=5000)
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
     while not wlan.isconnected():
         machine.idle()
     print(wlan.ifconfig())
@@ -160,11 +123,7 @@ def connect_to_wifi():
 
 def attach_to_lte():
     return_val = 0
-<<<<<<< HEAD
  
-=======
-
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
     # First, enable the module radio functionality and attach to the LTE network
     attach_try = 0
     while attach_try < 3:
@@ -175,16 +134,9 @@ def attach_to_lte():
         attempt = 0
         while attempt < 20:
             if not lte.isattached():
-<<<<<<< HEAD
                 print(lte.send_at_cmd('AT!="fsm"'))         # get the System FSM
                 attempt += 1
                 utime.sleep(5.0)
-=======
-                attempt += 1
-                print('.',end='')
-                print(lte.send_at_cmd('AT!="fsm"'))         # get the System FSM
-                utime.sleep(2)
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
             else:
                 print("attached!")
                 break
@@ -193,27 +145,15 @@ def attach_to_lte():
             return_val = 1    # update return_val to indicate successful attach
             break
         else:
-<<<<<<< HEAD
-=======
-            attach_try += 1.0
-            lte.reset()   # Reset the cellular modem
-            utime.sleep(7)  #Reset can take up to 5 seconds
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
             print("Attempt #%d failed. Try attaching again!" %(attach_try))
             attach_try += 1.0
             utime.sleep(7)
 
     # If the GPy failed to connect to the LTE network return an error code
     if not lte.isattached():
-<<<<<<< HEAD
         print("Failed to attach to the LTE system")
     
     return return_val
-=======
-        print("Failed to connect to the LTE network")
-    
-    return return_val          # return_val is 0 (from initialization) to indicate the attach failed
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
 
 
 def connect_to_lte_data():
@@ -309,7 +249,6 @@ def process_picture(picture_len_int):
 
     # Post the picture using the uPython urequests library
     """
-<<<<<<< HEAD
     # URL string.  Transmit the encoded image to the server
     url = "http://gaepd.janusresearch.com:8555/file/base64"
     #url = "http://water.roeber.dev:80/file/base64"
@@ -319,8 +258,6 @@ def process_picture(picture_len_int):
         'Content-Type': 'application/json',
     }
 
-=======
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
     try:
         wdt=machine.WDT(timeout=5*1000)
         response = requests.post(url, headers=headers, data=data_file)
@@ -334,7 +271,6 @@ def process_picture(picture_len_int):
 
     # Post the picture using the uPython usockets library
     # Host at JRG, Inc
-<<<<<<< HEAD
     """
     host = "gaepd.janusresearch.com"
     port = 8555
@@ -345,17 +281,6 @@ def process_picture(picture_len_int):
     port = 80
     server_address = socket.getaddrinfo('water.roeber.dev', 80)[0][-1]
     
-=======
-    host = "gaepd.janusresearch.com"
-    port = 8555
-    server_address = socket.getaddrinfo('gaepd.janusresearch.com', 8555)[0][-1]
-
-    # Host on Digital Ocean
-    #host = "water.roeber.dev"
-    #port = 80
-    #server_address = socket.getaddrinfo('water.roeber.dev', 80)[0][-1]
-
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
 
     headers = """\
 POST /file/base64 HTTP/1.1\r
@@ -372,7 +297,6 @@ Host: {host}\r
 
     payload = header_bytes + data_file
 
-<<<<<<< HEAD
     s = socket.socket()
     s.setblocking(True)
     s.settimeout(30)
@@ -387,21 +311,6 @@ Host: {host}\r
     print("...Send complete")
 
     s.settimeout(60)
-=======
-    #print(server_address)
-    #print(header_bytes)
-
-    #s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s = socket.socket()
-    s.setblocking(False)
-    s.settimeout(15)
-
-    print("Connect to server")
-    s.connect(server_address)
-
-    print("Ready to send")
-    s.sendall(payload)
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
     print(s.recv(1024))  # Print the data that the server returns
 
 """
@@ -540,14 +449,6 @@ def shutdown():
     #    Delay 6hrs and 15 minutes (22500 seconds) assuming that the RTC interrupts every 6 hours
     #machine.deepsleep(22500000)
     utime.sleep(22500)
-<<<<<<< HEAD
-=======
-
-    #For testing only - a short sleep time
-    #utime.sleep(120)
-    #machine.deepsleep(90000)   # 1000 * number of seconds.  For 1 second, deepsleep(1000)
-    #utime.sleep(90)
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
     
     # Pull the RESET pin LOW to reset the GPy
     gpy_reset()
@@ -580,11 +481,6 @@ voltage_level = battery_voltage()
 #################################### Network Connection #############################################################
 connect_to_wifi()
 
-<<<<<<< HEAD
-
-=======
-"""
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
 attached = 0
 attached = attach_to_lte()
 
@@ -600,7 +496,6 @@ connected = connect_to_lte_data()
 
 if not connected:
     shutdown()      # Wait for the next scheduled reset
-"""
 
 
 print("server addresses")
@@ -713,13 +608,8 @@ print('end transfer')
 
 
 # Picture transfer is complete so disconnect from the network
-<<<<<<< HEAD
 #wlan.disconnect()
 lte.deinit(detach=True,reset=True)
-=======
-wlan.disconnect()
-#lte.deinit(detach=True,reset=False)
->>>>>>> 03d4fd68761cf695ee898a70526815d81cddae28
 
 print("Network disconnected, going to sleep")
 
