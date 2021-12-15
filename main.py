@@ -1,4 +1,5 @@
 import pycom
+import machine                  # for machine.idle when using wlan
 from machine import Pin, I2C    # To control the pin that RESETs the ESP32-CAM, I2C for RTC
 from machine import UART        # Receiving pictures from the ESP32-CAM
 from machine import ADC         # Battery voltage measurement
@@ -8,14 +9,14 @@ import base64                   # For encoding the picture
 import urequests as requests    # Used for http transfer with the server
 import utime                    # Time delays
 import usocket as socket
-from socket import AF_INET, SOCK_DGRAM  # Needed when synchronizing the DS3231 with NTP
+from socket import AF_INET, SOCK_DGRAM, SOCK_STREAM
 import ustruct
 from urtc import DS3231         # DS3231 real time clock
 
 pycom.heartbeat(False)
 
 # Assign the Station ID number (0-99)
-station_id = "50"
+station_id = 50
 
 timezone = -5 # est: -5   edt: -4
 
@@ -25,7 +26,7 @@ lte = LTE()
 #print(lte.iccid())  # Print the SIM Card ICCID
 
 # Establish the WiFi object as a station; Internal antenna
-#wlan = WLAN(mode=WLAN.STA,antenna=WLAN.INT_ANT,max_tx_pwr=20)  #range is 8 to 78
+wlan = WLAN(mode=WLAN.STA,antenna=WLAN.INT_ANT,max_tx_pwr=20)  #range is 8 to 78
 
 i2c = I2C(0, I2C.MASTER, baudrate=100000)  # use default pins P9 and P10 for I2C
 ds3231 = DS3231(i2c)
@@ -122,32 +123,37 @@ def connect_to_wifi():
 
 
 def attach_to_lte():
-    return_val = 0
- 
+    return_val = 0  # Initialize as 'Failed to attach'
+
     # First, enable the module radio functionality and attach to the LTE network
-    attach_try = 0
-    while attach_try < 3:
-        lte.attach(apn="wireless.dish.com",type=LTE.IP)
+    try:
+        attach_try = 0
+        while attach_try < 5:
+            lte.attach(apn="wireless.dish.com",type=LTE.IP)  # Ting using T-Mobile
+            #lte.attach(apn="m2m64.com.attz",type=LTE.IP)  # AT&T OneRate SIMs
 
-        print("attaching..",end='')
+            print("attaching..",end='')
 
-        attempt = 0
-        while attempt < 20:
-            if not lte.isattached():
-                print(lte.send_at_cmd('AT!="fsm"'))         # get the System FSM
-                attempt += 1
-                utime.sleep(5.0)
-            else:
-                print("attached!")
+            attempt = 0
+            while attempt < 10:
+                if not lte.isattached():
+                    print(lte.send_at_cmd('AT!="fsm"'))         # get the System FSM
+                    attempt += 1
+                    utime.sleep(5.0)
+                else:
+                    print("attached!")
+                    break
+            # Break out of the 'attach_try' while loop if attached to the LTE network
+            if lte.isattached():
+                return_val = 1    # update return_val to indicate successful attach
                 break
-        # Break out of the 'attach_try' while loop if attached to the LTE network
-        if lte.isattached():
-            return_val = 1    # update return_val to indicate successful attach
-            break
-        else:
-            print("Attempt #%d failed. Try attaching again!" %(attach_try))
-            attach_try += 1.0
-            utime.sleep(7)
+            else:
+                print("Attempt #%d failed. Try attaching again!" %(attach_try))
+                attach_try += 1.0
+                utime.sleep(10)
+    except Exception as e:
+        print("Exception in s.sendall()")
+        print(e)
 
     # If the GPy failed to connect to the LTE network return an error code
     if not lte.isattached():
@@ -197,33 +203,34 @@ def connect_to_lte_data():
     return return_val
 
 
-def send_sms_msg():
+def send_sms_msg(voltage):
     ################## Send SMS ################################
-    """
-    def _getlte():
-    if not lte.isattached():
-        print('lte attaching '); lte.attach()
-        while 1:
-        if lte.isattached(): print(' OK'); break
-        print('. ', end=''); utime.sleep(1)
+    count = 0
+    try:
+        count = pycom.nvs_get('sms_count')
+    except Exception as e:
+        print(e)
 
-    _getlte()
-    """
+    if count is None:
+        count = 0
+    
+    print("SMS message count: ", count)
+    if count == 10:
+        phone_number = 7623204402
 
+        sms_at_cmd = "AT+SQNSMSSEND=\"{}\",\"Meter JRG{:05.0f} @ Voltage {:.2f}\""
+        sms_message = sms_at_cmd.format(phone_number,station_id,voltage)
+        print(sms_message)
 
+        #attach_to_lte()
+        #print('sending an sms', end=' '); ans=lte.send_at_cmd(sms_message).split('\r\n'); print(ans)
+        #lte.detach
+        count = 0
+    else:
+        count += 1
 
-    #print('configuring for sms', end=' '); ans=lte.send_at_cmd('AT+CMGF=1').split('\r\n'); print(ans, end=' ')
-    #ans=lte.send_at_cmd('AT+CPMS="SM", "SM", "SM"').split('\r\n'); print(ans); print()
-    #print('receiving an sms', end=' '); ans=lte.send_at_cmd('AT+CMGL="all"').split('\r\n'); print(ans); print()                                               
-    #print('sending an sms', end=' '); ans=lte.send_at_cmd('AT+SQNSMSSEND="7623204402",sms_data').split('\r\n'); print(ans)
+    pycom.nvs_set('sms_count', count)
 
-    """"
-    voltage = 7.628
-    #var2="Meter Number {0:0d} @ Voltage {1:0.2f}".format(station_id,voltage)
-    var2="{}Meter Number {:05d} @ Voltage {:.2f}{}"
-    print(var2.format("\"",station_id,voltage,"\""))
-    print('sending an sms', end=' '); ans=lte.send_at_cmd('AT+SQNSMSSEND="7623204402",var2.format("\"",station_id,voltage,"\""))').split('\r\n'); print(ans)
-    """
 
 
 def process_picture(picture_len_int):
@@ -245,10 +252,9 @@ def process_picture(picture_len_int):
     del buf
 
     # Transmit the encoded image to the server
-    data_file = "{\"voltage\": " + voltage_level + ",\"base64File\": \"" +  b64_picture_bytes.decode('ascii') + "\", \"id\": " + station_id + ", \"timeStamp\": \"" + time_stamp + "\"}" 
+    data_file = "{\"voltage\": " + string_volts + ",\"base64File\": \"" +  b64_picture_bytes.decode('ascii') + "\", \"id\": " + str(station_id) + ", \"timeStamp\": \"" + time_stamp + "\"}" 
 
-    # Post the picture using the uPython urequests library
-    """
+    
     # URL string.  Transmit the encoded image to the server
     url = "http://gaepd.janusresearch.com:8555/file/base64"
     #url = "http://water.roeber.dev:80/file/base64"
@@ -258,72 +264,14 @@ def process_picture(picture_len_int):
         'Content-Type': 'application/json',
     }
 
+    print("Send the image")
     try:
-        wdt=machine.WDT(timeout=5*1000)
         response = requests.post(url, headers=headers, data=data_file)
         print(response.text)  # Prints the return filename from the server in json format
-        response.close()
     except Exception as e:
         print(e)
-    """
 
 
-
-    # Post the picture using the uPython usockets library
-    # Host at JRG, Inc
-    """
-    host = "gaepd.janusresearch.com"
-    port = 8555
-    server_address = socket.getaddrinfo('gaepd.janusresearch.com', 8555)[0][-1]
-    """
-    # Host on Digital Ocean
-    host = "water.roeber.dev"
-    port = 80
-    server_address = socket.getaddrinfo('water.roeber.dev', 80)[0][-1]
-    
-
-    headers = """\
-POST /file/base64 HTTP/1.1\r
-Content-Type: {content_type}\r
-Content-Length: {content_length}\r
-Host: {host}\r
-\r\n"""
-
-    header_bytes = headers.format(
-        content_type="application/json",
-        content_length=len(data_file),
-        host=str(host) + ":" + str(port)
-    ).encode('iso-8859-1')
-
-    payload = header_bytes + data_file
-
-    s = socket.socket()
-    s.setblocking(True)
-    s.settimeout(30)
-
-    print("Connect to server")
-    s.settimeout(30)
-    s.connect(server_address)
-
-    print("Sending photo to server...")
-    s.settimeout(240)
-    s.sendall(payload)
-    print("...Send complete")
-
-    s.settimeout(60)
-    print(s.recv(1024))  # Print the data that the server returns
-
-"""
-    s = socket.socket()
-    s.setblocking(False)
-    try:
-        s.connect(server_address)
-    except OSError as e:
-        if str(e) == '119':   # For non-Blocking sockets 119 is EINPROGRESS
-            print("Socket connection in progress")
-        else:
-            raise e
-"""
     
 
 
@@ -355,12 +303,7 @@ def battery_voltage():
     #   For V_battery = 7.3V, V_measured = 1.002V
 
     volts = adc_value * 0.001754703 + 0.544528802 
-    print("Voltage = %5.2f V" % (volts))
-
-    # Return voltage without a decimal so that it can be used in the photo filename
-    rounded_value = 100 * round(volts,2)  # e.g., for volts = 6.475324, rounded_value = 648.
-    integer_value = int(rounded_value)    # for rounded_value = 648.  integer_value = 648 
-    return str(integer_value)
+    return volts
 
 # Set the clock with NTP date/time
 def sync_clock():
@@ -448,7 +391,10 @@ def shutdown():
     # Delay.  Expect that the RTC will reset the GPY before this delay expires.
     #    Delay 6hrs and 15 minutes (22500 seconds) assuming that the RTC interrupts every 6 hours
     #machine.deepsleep(22500000)
-    utime.sleep(22500)
+    #utime.sleep(22500)
+
+    # For testing, transmit more frequently
+    utime.sleep(300)
     
     # Pull the RESET pin LOW to reset the GPy
     gpy_reset()
@@ -474,35 +420,40 @@ ds3231_trigger.callback(Pin.IRQ_FALLING, ds3231_int_handler)
 
 
 ######################## Read the battery voltage ##############################
-voltage_level = battery_voltage()
+volts = battery_voltage()
+print("Voltage = %5.2f V" % (volts))
+
+# Use voltage as a string without a decimal so that it can be included in the photo filename
+rounded_volts = 100 * round(volts,2)  # e.g., for volts = 6.475324, rounded_value = 648.
+integer_volts = int(rounded_volts)    # for rounded_value = 648.  integer_value = 648 
+string_volts = str(integer_volts)
+
+
+# Test the sms string
+send_sms_msg(volts)
 
 
 
 #################################### Network Connection #############################################################
 connect_to_wifi()
 
-attached = 0
-attached = attach_to_lte()
+#attached = 0
+#attached = attach_to_lte()
 
-if not attached:
-    print("Shutting down.  Better luck next reset.")
-    shutdown()     # Wait for the next scheduled reset
+#if not attached:
+    #print("Shutting down.  Better luck next reset.")
+    #shutdown()     # Wait for the next scheduled reset
 
 # Send an SMS message here if needed (after attached to LTE and before connected to LTE data)
 
 
-connected = 0
-connected = connect_to_lte_data()
+#connected = 0
+#connected = connect_to_lte_data()
 
-if not connected:
-    shutdown()      # Wait for the next scheduled reset
+#if not connected:
+    #shutdown()      # Wait for the next scheduled reset
 
 
-print("server addresses")
-server_address = socket.getaddrinfo('water.roeber.dev', 80)[0][-1]
-print(server_address)
-#server_address = socket.getaddrinfo('gaepd.janusresearch.com', 8555)[0][-1]
-#print(server_address)
 
 ################################### DS3231 Synchronization with NTP server ##################################################
 # Synchronize the DS3231 clock with NTP on the first day of the month
@@ -534,39 +485,54 @@ camera_time_stamp = '{:04d}{:02d}{:02d}{:02d}{:02d}'.format(datetime[0], datetim
 #print("CameraTimestamp", camera_time_stamp)
 
 # Picture filename.  Transmit this to the ESP32-CAM. It is used for the SD Card filename on the ESP32-CAM
-picture_filename = station_id + '_' + camera_time_stamp + '_' + voltage_level + '\0'
+picture_filename = str(station_id) + '_' + camera_time_stamp + '_' + string_volts + '\0'
 print(picture_filename)  # Print the filename to make sure it is properly formatted
-
-
-# Toggle the ESP32-CAM RESET line to initiate the picture capture process
-camera_trigger(0)
-utime.sleep_ms(10)
-camera_trigger(1)
-
 
 # For testing only.  Print a string to the GPy terminal
 print('new picture')
 
-
 # Parse through the data that follows the ESP32-CAM bootup transmission to find the keyword, 'ready'
-# TODO: This needs a timeout escape so that the code does not hang here
 
 # Transmit 'Hello' until 'ready' is received
 keyword = b'ready'  # Expected word from the ESP32-CAM
 utime.sleep(1)
-# Send a greeting followed by reading the response
-while True:
-    uart.write('Hello\0')
-    utime.sleep_ms(200)
-    reply = uart.readline()
-    print(reply)
-    if reply == keyword:
-            break
 
-print("found the keyword")  # The word 'ready' was received
+camera_connect = 0
+while camera_connect < 3:
+    print("Camera connect attempt")
+    print(camera_connect + 1)
+
+    # Toggle the ESP32-CAM RESET line to initiate the picture capture process
+    camera_trigger(0)
+    utime.sleep_ms(10)
+    camera_trigger(1)
+
+    # Send a greeting followed by reading the reply
+    reply_count = 0
+    while reply_count < 50:
+        uart.write('Hello\0')
+        utime.sleep_ms(200)
+        reply = uart.readline()
+        print(reply)
+        if reply == keyword:
+                print("found the keyword")  # The word 'ready' was received
+                break
+        reply_count += 1
+    print("Completed attempt to find the keyword")
+    if reply == keyword:
+        break
+    camera_connect += 1
+    utime.sleep(5)
+
+if reply == keyword:
+    print("send the picture filename")
+else:
+    print("The camera did not connect.  Shutting down...")
+    shutdown()
 
 # Send the picture filename to the ESP32-CAM.  This filename will be used
 #   by the ESP32-CAM to store the picture to its local SD-Card.
+
 utime.sleep_ms(200)
 uart.write(picture_filename)
 
@@ -608,8 +574,8 @@ print('end transfer')
 
 
 # Picture transfer is complete so disconnect from the network
-#wlan.disconnect()
-lte.deinit(detach=True,reset=True)
+wlan.disconnect()
+#lte.deinit(detach=True,reset=True)
 
 print("Network disconnected, going to sleep")
 
