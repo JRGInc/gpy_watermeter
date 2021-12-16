@@ -13,6 +13,9 @@ from socket import AF_INET, SOCK_DGRAM, SOCK_STREAM
 import ustruct
 from urtc import DS3231         # DS3231 real time clock
 
+from _pybytes import Pybytes
+from _pybytes_config import PybytesConfig
+
 pycom.heartbeat(False)
 
 # Assign the Station ID number (0-99)
@@ -78,6 +81,7 @@ def set_next_alarm():
 
     #  Calculate the time (GMT) for the next alarm based on the startup time.
     #  For this case, the alarm times are 0705, 1305, 1905 and 0105 hrs.
+    """
     if startup_hour >= 0 and startup_hour < 7:
         next_hour = 7
     elif startup_hour >= 7 and startup_hour < 13:
@@ -87,17 +91,19 @@ def set_next_alarm():
     else:
         next_hour = 1
 
-    next_minute = 5
 
-    # Testing.  Set the alarm
+    next_minute = 5
+            """
+
+    # Testing.  Set the alarm to interrupt every 30 minutes.  
     # Format: [year, month, day, weekday, hour, minute, second, millisecond]
-    #next_hour = startup_hour
-    #next_minute = startup_minute + 3  # Send a picture every three minutes
-    #if next_minute > 59:
-    #    next_minute -= 60
-    #    next_hour += 1
-    #    if next_hour > 23:
-    #        next_hour -= 24
+    next_hour = startup_hour
+    next_minute = startup_minute + 30  # Interrupt every 30 minutes
+    if next_minute > 59:
+        next_minute -= 60
+        next_hour += 1
+        if next_hour > 23:
+            next_hour -= 24
 
     alarm = [None, None, None, None, next_hour, next_minute, 0, None]  # Alarm when hours, minutes and seconds (0) match
     alarm_datetime = tuple(alarm)
@@ -115,11 +121,17 @@ def set_next_alarm():
 
 
 def connect_to_wifi():
-    #wlan.connect(ssid='polaris', auth=(WLAN.WPA2, 'gALAtians_03:20'))
-    wlan.connect(ssid='JRG Guest', auth=(WLAN.WPA2, '600guest'), timeout=5000)
-    while not wlan.isconnected():
-        machine.idle()
-    print(wlan.ifconfig())
+    try:
+        #wlan.connect(ssid='polaris', auth=(WLAN.WPA2, 'gALAtians_03:20'))
+        wlan.connect(ssid='JRG Guest', auth=(WLAN.WPA2, '600guest'), timeout=5000)
+        while not wlan.isconnected():
+            machine.idle()
+        print(wlan.ifconfig())
+    except Exception as e:
+        print("Exception in connect_to_wifi()")
+        print(e)
+        print("Shutting down...")
+        shutdown()    
 
 
 def attach_to_lte():
@@ -205,31 +217,44 @@ def connect_to_lte_data():
 
 def send_sms_msg(voltage):
     ################## Send SMS ################################
-    count = 0
-    try:
-        count = pycom.nvs_get('sms_count')
-    except Exception as e:
-        print(e)
+    phone_number = 7623204402
 
-    if count is None:
-        count = 0
+    sms_at_cmd = "AT+SQNSMSSEND=\"{}\",\"Meter JRG{:05.0f} @ Voltage {:.2f}\""
+    sms_message = sms_at_cmd.format(phone_number,station_id,voltage)
+    print(sms_message)
+
+    attach_to_lte()
+    print('sending an sms', end=' '); ans=lte.send_at_cmd(sms_message).split('\r\n'); print(ans)
+    lte.detach
+
+
+
+
+    #count = 0
+    #try:
+    #    count = pycom.nvs_get('sms_count')
+    #except Exception as e:
+    #    print(e)
+
+    #if count is None:
+    #    count = 0
     
-    print("SMS message count: ", count)
-    if count == 10:
-        phone_number = 7623204402
+    #print("SMS message count: ", count)
+    #if count >= 6:
+    #    phone_number = 7623204402
 
-        sms_at_cmd = "AT+SQNSMSSEND=\"{}\",\"Meter JRG{:05.0f} @ Voltage {:.2f}\""
-        sms_message = sms_at_cmd.format(phone_number,station_id,voltage)
-        print(sms_message)
+    #    sms_at_cmd = "AT+SQNSMSSEND=\"{}\",\"Meter JRG{:05.0f} @ Voltage {:.2f}\""
+    #    sms_message = sms_at_cmd.format(phone_number,station_id,voltage)
+    #    print(sms_message)
 
-        #attach_to_lte()
-        #print('sending an sms', end=' '); ans=lte.send_at_cmd(sms_message).split('\r\n'); print(ans)
-        #lte.detach
-        count = 0
-    else:
-        count += 1
+    #    attach_to_lte()
+    #    print('sending an sms', end=' '); ans=lte.send_at_cmd(sms_message).split('\r\n'); print(ans)
+    #    lte.detach
+    #    count = 0
+    #else:
+    #    count += 1
 
-    pycom.nvs_set('sms_count', count)
+    #pycom.nvs_set('sms_count', count)
 
 
 
@@ -391,10 +416,10 @@ def shutdown():
     # Delay.  Expect that the RTC will reset the GPY before this delay expires.
     #    Delay 6hrs and 15 minutes (22500 seconds) assuming that the RTC interrupts every 6 hours
     #machine.deepsleep(22500000)
-    #utime.sleep(22500)
+    utime.sleep(22500)
 
     # For testing, transmit more frequently
-    utime.sleep(300)
+    #utime.sleep(300)
     
     # Pull the RESET pin LOW to reset the GPy
     gpy_reset()
@@ -408,6 +433,7 @@ def shutdown():
 # For testing only.  A message and a delay
 print("Starting ...")
 utime.sleep(1)
+
 
 # Before any other action, set the next DS3231 alarm time and clear the DS3231 interrupt request.  If any of the functions hang,
 #   the DS3231 will reset the GPy at the next alarm.
@@ -429,8 +455,59 @@ integer_volts = int(rounded_volts)    # for rounded_value = 648.  integer_value 
 string_volts = str(integer_volts)
 
 
-# Test the sms string
-send_sms_msg(volts)
+# Read the nvram interval (or, interrupt) counter and take appropriate action.
+#   The RTC interrupts every 30 minutes
+send_photo = False
+int_count = 0
+
+try:
+    int_count = pycom.nvs_get('int_counter')
+except Exception as e:
+    print(e)
+
+# This is for the initial condition in which the variable is not yet defined in nvram
+if int_count is None:
+    int_count = 0
+
+
+# Send an SMS once every 6 hours (every 12 intervals)
+trigger = int_count % 12
+if trigger == 0:
+    send_sms_msg(volts)
+
+# Send a pybytes message every two hours (every 4 intervals)
+trigger = int_count % 4
+if trigger == 0:
+
+    conf = PybytesConfig().read_config()
+    pybytes = Pybytes(conf)
+
+    try:
+        pybytes.connect()
+    except Exception as e:
+        print(e)
+
+    print("Sending data to pybytes")
+    try:
+        pybytes.send_signal(0, volts)  # Send message to channel 0
+    except Exception as e:
+        print(e)
+
+    pybytes.disconnect()
+
+# Send a photo every 4 hours (every 8 intervals)
+trigger = int_count % 8
+if trigger == 0:
+    send_photo = True
+
+# Increment the counter. TODO: the counter 'should' rollover.  Check it.
+int_count += 1
+pycom.nvs_set('int_counter', int_count)
+print("Interval counter: ", int_count)
+
+if send_photo == False:
+    print("Shutting down...")
+    shutdown()
 
 
 
@@ -539,30 +616,29 @@ uart.write(picture_filename)
 
 
 # Read the picture length from the ESP32-Cam.  Convert the value to an integer
-while True:
+picture_len_try = 0
+received_picture_len = False
+while picture_len_try < 50:
     picture_len = uart.readline()
-    if(picture_len is not None):
-        #print(picture_len)
+    try:
+        # Strip the trailing whitespace (e.g. \r\n)
+        picture_len_bytes = picture_len.strip()
+        # Cast the value to an integer.  If the case is successful, the picture length is a number
+        picture_len_int = int(picture_len_bytes)
+        received_picture_len = True
         break
+    except:
+        print('The picture length is not a number')
+    picture_len_try += 1
+    utime.sleep_ms(100)
 
+if received_picture_len == False:
+    shutdown()
+else:
+    print(picture_len_int)
 
-# Strip the trailing whitespace (e.g. \r\n)
-picture_len_bytes = picture_len.strip()
-
-# Cast the value to an integer
-picture_len_int = int(picture_len_bytes)
-print(picture_len_int)
 
 print('Begin transfer')
-
-"""
-if not lte.isconnected():
-    print("Lost data connection")
-    connect_to_lte_data()
-else:
-    print("Still connected")
-"""
-
 process_picture(picture_len_int)
 
 # Turn off the UART port
