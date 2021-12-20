@@ -28,8 +28,8 @@ lte = LTE()
 #print(lte.imei())  # Print the GPY IMEI
 #print(lte.iccid())  # Print the SIM Card ICCID
 
-# Establish the WiFi object as a station; Internal antenna
-wlan = WLAN(mode=WLAN.STA,antenna=WLAN.INT_ANT,max_tx_pwr=20)  #range is 8 to 78
+# Establish the WiFi object as a station; External antenna
+wlan = WLAN(mode=WLAN.STA,antenna=WLAN.EXT_ANT,max_tx_pwr=30)  #range is 8 to 78
 
 i2c = I2C(0, I2C.MASTER, baudrate=100000)  # use default pins P9 and P10 for I2C
 ds3231 = DS3231(i2c)
@@ -79,8 +79,19 @@ def set_next_alarm():
 
     print("startup time: ", startup_datetime)
 
+
+    sequence_start = 0
+    alarm_interval = 4    # number of hours between DS3231 interrupts
+
+    #next_hour = (startup_hour[4] // alarm_interval) * alarm_interval + alarm_interval + sequence_start
+    next_hour = (startup_hour // alarm_interval) * alarm_interval + alarm_interval + sequence_start
+    next_hour = next_hour % 24
+    next_minute = 5
+
     #  Calculate the time (GMT) for the next alarm based on the startup time.
     #  For this case, the alarm times are 0705, 1305, 1905 and 0105 hrs.
+
+    # TODO: Finalize the interrupt interval prior to deploying.
     """
     if startup_hour >= 0 and startup_hour < 7:
         next_hour = 7
@@ -93,17 +104,19 @@ def set_next_alarm():
 
 
     next_minute = 5
-            """
+    """
 
+    """
     # Testing.  Set the alarm to interrupt every 30 minutes.  
     # Format: [year, month, day, weekday, hour, minute, second, millisecond]
     next_hour = startup_hour
-    next_minute = startup_minute + 30  # Interrupt every 30 minutes
+    next_minute = startup_minute + 15  # Interrupt every 30 minutes
     if next_minute > 59:
         next_minute -= 60
         next_hour += 1
         if next_hour > 23:
             next_hour -= 24
+    """
 
     alarm = [None, None, None, None, next_hour, next_minute, 0, None]  # Alarm when hours, minutes and seconds (0) match
     alarm_datetime = tuple(alarm)
@@ -119,19 +132,19 @@ def set_next_alarm():
 
 
 
-
 def connect_to_wifi():
     try:
-        #wlan.connect(ssid='polaris', auth=(WLAN.WPA2, 'gALAtians_03:20'))
-        wlan.connect(ssid='JRG Guest', auth=(WLAN.WPA2, '600guest'), timeout=5000)
+        wlan.connect(ssid='JRG Guest', auth=(WLAN.WPA2, '600guest'), timeout=10000)
         while not wlan.isconnected():
             machine.idle()
-        print(wlan.ifconfig())
+
     except Exception as e:
         print("Exception in connect_to_wifi()")
         print(e)
         print("Shutting down...")
         shutdown()    
+
+    print("Connected to wifi: ", wlan.ifconfig())
 
 
 def attach_to_lte():
@@ -139,15 +152,13 @@ def attach_to_lte():
 
     # First, enable the module radio functionality and attach to the LTE network
     try:
-        attach_try = 0
+        attach_try = 1
         while attach_try < 5:
             lte.attach(apn="wireless.dish.com",type=LTE.IP)  # Ting using T-Mobile
-            #lte.attach(apn="m2m64.com.attz",type=LTE.IP)  # AT&T OneRate SIMs
-
             print("attaching..",end='')
 
             attempt = 0
-            while attempt < 10:
+            while attempt < 15:
                 if not lte.isattached():
                     print(lte.send_at_cmd('AT!="fsm"'))         # get the System FSM
                     attempt += 1
@@ -215,46 +226,32 @@ def connect_to_lte_data():
     return return_val
 
 
-def send_sms_msg(voltage):
+def send_sms_msg(voltage, datetime):
     ################## Send SMS ################################
     phone_number = 7623204402
 
-    sms_at_cmd = "AT+SQNSMSSEND=\"{}\",\"Meter JRG{:05.0f} @ Voltage {:.2f}\""
-    sms_message = sms_at_cmd.format(phone_number,station_id,voltage)
-    print(sms_message)
+    year = datetime[0]
+    month = datetime[1]
+    day = datetime[2]
+    hour = datetime[4]
+    minute = datetime[5]
+
+    dt_string = "{:4.0f}-{:02.0f}-{:02.0f} {:02.0f}{:02.0f}hrs (Z)"
+    dt = dt_string.format(year,month,day,hour,minute)
+
+    sms_at_cmd = "AT+SQNSMSSEND=\"{}\",\"Meter JRG{:05.0f} @ {} Voltage {:.2f}\""
+    sms_message = sms_at_cmd.format(phone_number,station_id,dt,voltage)
+
+    #print(sms_message)
 
     attach_to_lte()
-    print('sending an sms', end=' '); ans=lte.send_at_cmd(sms_message).split('\r\n'); print(ans)
-    lte.detach
+    if lte.isattached():
+        print('sending an sms', end=' '); ans=lte.send_at_cmd(sms_message).split('\r\n'); print(ans)
+        #lte.detach()   # Do not detatch from LTE.  If the attach was
+                        #   successful, stay attached to support the picture transfer
+    else:
+        print("Did not attach to the LTE system so did not send an sms")
 
-
-
-
-    #count = 0
-    #try:
-    #    count = pycom.nvs_get('sms_count')
-    #except Exception as e:
-    #    print(e)
-
-    #if count is None:
-    #    count = 0
-    
-    #print("SMS message count: ", count)
-    #if count >= 6:
-    #    phone_number = 7623204402
-
-    #    sms_at_cmd = "AT+SQNSMSSEND=\"{}\",\"Meter JRG{:05.0f} @ Voltage {:.2f}\""
-    #    sms_message = sms_at_cmd.format(phone_number,station_id,voltage)
-    #    print(sms_message)
-
-    #    attach_to_lte()
-    #    print('sending an sms', end=' '); ans=lte.send_at_cmd(sms_message).split('\r\n'); print(ans)
-    #    lte.detach
-    #    count = 0
-    #else:
-    #    count += 1
-
-    #pycom.nvs_set('sms_count', count)
 
 
 
@@ -282,6 +279,7 @@ def process_picture(picture_len_int):
     
     # URL string.  Transmit the encoded image to the server
     url = "http://gaepd.janusresearch.com:8555/file/base64"
+    #url = "http://198.13.81.244:8555/file/base64"
     #url = "http://water.roeber.dev:80/file/base64"
 
     # HTTP Header string
@@ -296,8 +294,15 @@ def process_picture(picture_len_int):
     except Exception as e:
         print(e)
 
+        # try once more
+        utime.sleep(5)
+        try:
+            response = requests.post(url, headers=headers, data=data_file)
+            print(response.text)  # Prints the return filename from the server in json format
+        except Exception as e:
+            print(e)   
 
-    
+
 
 
 def battery_voltage():
@@ -432,13 +437,11 @@ def shutdown():
 ################################################ Entry Point ############################################
 # For testing only.  A message and a delay
 print("Starting ...")
-utime.sleep(1)
-
+utime.sleep(2)
 
 # Before any other action, set the next DS3231 alarm time and clear the DS3231 interrupt request.  If any of the functions hang,
 #   the DS3231 will reset the GPy at the next alarm.
 startup_datetime = set_next_alarm()
-
 
 # Now that the DS3231 interrupt request is cleared, configure P22 as an interrupt pin to detect DS3231 interrupts.
 ds3231_trigger = Pin('P22', mode=Pin.IN, pull=None)  # external pull up resistor on ds3231 reset pin
@@ -455,9 +458,9 @@ integer_volts = int(rounded_volts)    # for rounded_value = 648.  integer_value 
 string_volts = str(integer_volts)
 
 
+################# Send an SMS and/or a Pybytes message ###########################
 # Read the nvram interval (or, interrupt) counter and take appropriate action.
 #   The RTC interrupts every 30 minutes
-send_photo = False
 int_count = 0
 
 try:
@@ -469,66 +472,66 @@ except Exception as e:
 if int_count is None:
     int_count = 0
 
+print("Send an SMS and/or Pybytes message as needed")
 
-# Send an SMS once every 6 hours (every 12 intervals)
-trigger = int_count % 12
+# Send an SMS once every 3 intervals 
+trigger = int_count % 3
 if trigger == 0:
-    send_sms_msg(volts)
+    print("Send SMS")
+    send_sms_msg(volts, startup_datetime)
 
-# Send a pybytes message every two hours (every 4 intervals)
-trigger = int_count % 4
+# Send a pybytes message every 2 intervals
+trigger = int_count % 2
 if trigger == 0:
-
+    print("Call home to pybytes...")
     conf = PybytesConfig().read_config()
     pybytes = Pybytes(conf)
+    if not pybytes.isconnected():
+        try:
+            print("Attempt to connect to pybytes")
+            pybytes.connect()
+            print("connected to pybytes")
+        except Exception as e:
+            print("Did not connect to pybytes: ", e)
+    else:
+        print("Already connected")
 
-    try:
-        pybytes.connect()
-    except Exception as e:
-        print(e)
+    if pybytes.isconnected():
+        print("Sending data to pybytes")
+        volt_string = "{:.2f}"
+        v = volt_string.format(volts)
+        try:
+            pybytes.send_signal(0, v)  # Send voltage message to channel 0
+        except Exception as e:
+            print(e)
+    # Disconnect from pybytes at the end of the program, not here
 
-    print("Sending data to pybytes")
-    try:
-        pybytes.send_signal(0, volts)  # Send message to channel 0
-    except Exception as e:
-        print(e)
 
-    pybytes.disconnect()
-
-# Send a photo every 4 hours (every 8 intervals)
-trigger = int_count % 8
-if trigger == 0:
-    send_photo = True
-
-# Increment the counter. TODO: the counter 'should' rollover.  Check it.
+# Increment the counter.
 int_count += 1
 pycom.nvs_set('int_counter', int_count)
 print("Interval counter: ", int_count)
 
-if send_photo == False:
-    print("Shutting down...")
-    shutdown()
-
-
 
 #################################### Network Connection #############################################################
-connect_to_wifi()
+print("Connecting to the network")
+#connect_to_wifi()
 
-#attached = 0
-#attached = attach_to_lte()
+# The modem my already be attached to the lte network from a previous SMS or Pybytes transmission
 
-#if not attached:
-    #print("Shutting down.  Better luck next reset.")
-    #shutdown()     # Wait for the next scheduled reset
+if not lte.isattached():
+    attach_to_lte()
 
-# Send an SMS message here if needed (after attached to LTE and before connected to LTE data)
+if not lte.isattached():
+    print("Shutting down.  Better luck next reset.")
+    shutdown()     # Wait for the next scheduled reset
 
+connect_to_lte_data()
 
-#connected = 0
-#connected = connect_to_lte_data()
+if not lte.isconnected():
+    print("Did not connect to lte data.  Shutting down...")
+    shutdown()      # Wait for the next scheduled reset
 
-#if not connected:
-    #shutdown()      # Wait for the next scheduled reset
 
 
 
@@ -649,9 +652,17 @@ print('end transfer')
 
 
 
+# pybytes is not defined for every picture transfer.  Use a try: structure to disconnect from pybytes
+try:
+    if pybytes.isconnected():
+        print("Disconnect from pybytes")
+        pybytes.disconnect()
+except Exception as e:        
+    print("pybytes.disconnect(): ", e)
+
 # Picture transfer is complete so disconnect from the network
-wlan.disconnect()
-#lte.deinit(detach=True,reset=True)
+#wlan.disconnect()
+lte.deinit(detach=True,reset=True)
 
 print("Network disconnected, going to sleep")
 
