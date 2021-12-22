@@ -18,15 +18,11 @@ from _pybytes_config import PybytesConfig
 
 pycom.heartbeat(False)
 
-# Assign the Station ID number (0-99)
-station_id = 50
 
 timezone = -5 # est: -5   edt: -4
 
 # global LTE object
 lte = LTE()
-#print(lte.imei())  # Print the GPY IMEI
-#print(lte.iccid())  # Print the SIM Card ICCID
 
 # Establish the WiFi object as a station; External antenna
 wlan = WLAN(mode=WLAN.STA,antenna=WLAN.EXT_ANT,max_tx_pwr=30)  #range is 8 to 78
@@ -79,50 +75,20 @@ def set_next_alarm():
 
     print("startup time: ", startup_datetime)
 
-
-    sequence_start = 0
     alarm_interval = 4    # number of hours between DS3231 interrupts
 
-    #next_hour = (startup_hour[4] // alarm_interval) * alarm_interval + alarm_interval + sequence_start
-    next_hour = (startup_hour // alarm_interval) * alarm_interval + alarm_interval + sequence_start
+    # Calculate the next alarm hour based on intervals from midnight (e.g. 0, 4, 8, 12, ...)
+    #   Note: time is Zulu.  0hrs Z is 1900hrs EST (2000hrs EDT)
+    next_hour = (startup_hour // alarm_interval) * alarm_interval + alarm_interval
     next_hour = next_hour % 24
+    # Arbitrary minute
     next_minute = 5
-
-    #  Calculate the time (GMT) for the next alarm based on the startup time.
-    #  For this case, the alarm times are 0705, 1305, 1905 and 0105 hrs.
-
-    # TODO: Finalize the interrupt interval prior to deploying.
-    """
-    if startup_hour >= 0 and startup_hour < 7:
-        next_hour = 7
-    elif startup_hour >= 7 and startup_hour < 13:
-        next_hour = 13
-    elif startup_hour >= 13 and startup_hour < 19:
-        next_hour = 19
-    else:
-        next_hour = 1
-
-
-    next_minute = 5
-    """
-
-    """
-    # Testing.  Set the alarm to interrupt every 30 minutes.  
-    # Format: [year, month, day, weekday, hour, minute, second, millisecond]
-    next_hour = startup_hour
-    next_minute = startup_minute + 15  # Interrupt every 30 minutes
-    if next_minute > 59:
-        next_minute -= 60
-        next_hour += 1
-        if next_hour > 23:
-            next_hour -= 24
-    """
 
     alarm = [None, None, None, None, next_hour, next_minute, 0, None]  # Alarm when hours, minutes and seconds (0) match
     alarm_datetime = tuple(alarm)
     ds3231.alarm_time(alarm_datetime)
 
-    print("Next Alarm Time: ", ds3231.alarm_time())     # For debugging, print the alarm time
+    print("Next Alarm Time: ", ds3231.alarm_time())
     ds3231.no_interrupt()               # Ensure both alarm interrupts are disabled
     ds3231.no_alarmflag()               # Ensure both alarm flags in the status register are clear (even though Alarm 2 is not used)
     ds3231.interrupt(alarm=0)           # Enable Alarm 1 (alarm=0) interrupt
@@ -279,7 +245,6 @@ def process_picture(picture_len_int):
     
     # URL string.  Transmit the encoded image to the server
     url = "http://gaepd.janusresearch.com:8555/file/base64"
-    #url = "http://198.13.81.244:8555/file/base64"
     #url = "http://water.roeber.dev:80/file/base64"
 
     # HTTP Header string
@@ -306,15 +271,15 @@ def process_picture(picture_len_int):
 
 
 def battery_voltage():
-    gpy_enable_vmeas.value(1)  # enable the battery voltage divider
     adc = ADC(0)             # create an ADC object
     adc_vbat = adc.channel(pin='P18',attn=adc.ATTN_0DB)   # create an analog pin on P18
+    gpy_enable_vmeas.value(1)  # enable the battery voltage divider
 
     print("Reading Battery Voltage...")
 
     adc_value = 0.0
     for y in range(0,10):
-        utime.sleep_ms(10)
+        utime.sleep_ms(50)
         reading = adc_vbat()
         adc_value += reading
 
@@ -326,13 +291,8 @@ def battery_voltage():
 
     # GPy  has 1.1 V input range for ADC using ATTN_0DB
 
-    # The battery pack maximum voltage is 2 * 3.65 = 7.3V.  Allow for a maximum of 8V.
-    #   Use a voltage divider consisting of 352k and 56k resistors.
-    #   V_measured = 0.1372549 * V_battery
-    #   For V_battery = 8V, V_measured = 1.1V
-    #   For V_battery = 7.3V, V_measured = 1.002V
-
-    volts = adc_value * 0.001754703 + 0.544528802 
+    #volts = adc_value * 0.001754703 + 0.544528802
+    volts = adc_value * 0.001686281 + 0.607095645 
     return volts
 
 # Set the clock with NTP date/time
@@ -394,6 +354,30 @@ def sync_clock():
         utime.sleep(5)            # Time delay before next attempt at connecting to the NTP server
     return return_val
 
+def get_id():
+    # Define a two digit station identification based on the LTE IMEI.  The station ID is used in the picture filename and
+    #   is also part of the station name.
+    #   In order to deploy identical code to all meter sensors, this lookup table containing all of the station IDs and
+    #   IMEIs is needed.
+    imei = lte.imei()
+    if imei == '354347091855384':
+        id = 30
+    elif imei =='354347098256859':
+        id = 31
+    elif imei == '354347093248505':
+        id = 32
+    elif imei == '354347094696280':
+        id = 33
+    elif imei == '354347090353712':
+        id = 34
+    else:
+        id = 10
+
+    print("IMEI: ",imei," Station: ",id)
+
+    return id
+    
+
 def gpy_reset():
     # Pull the RESET pin LOW to reset the GPy
     gpy_reset_trigger.value(0)
@@ -439,6 +423,11 @@ def shutdown():
 print("Starting ...")
 utime.sleep(2)
 
+# Assign the Station ID number (0-99)
+station_id = get_id()
+
+
+
 # Before any other action, set the next DS3231 alarm time and clear the DS3231 interrupt request.  If any of the functions hang,
 #   the DS3231 will reset the GPy at the next alarm.
 startup_datetime = set_next_alarm()
@@ -459,30 +448,19 @@ string_volts = str(integer_volts)
 
 
 ################# Send an SMS and/or a Pybytes message ###########################
-# Read the nvram interval (or, interrupt) counter and take appropriate action.
-#   The RTC interrupts every 30 minutes
-int_count = 0
-
-try:
-    int_count = pycom.nvs_get('int_counter')
-except Exception as e:
-    print(e)
-
-# This is for the initial condition in which the variable is not yet defined in nvram
-if int_count is None:
-    int_count = 0
-
 print("Send an SMS and/or Pybytes message as needed")
+send_msg = False
+# Send a message if the current hour is after 4PM (Z) and at or before 8PM (Z)
+if startup_datetime[4] > 16 and startup_datetime[4] <= 20:
+    send_msg = True
 
-# Send an SMS once every 3 intervals 
-trigger = int_count % 3
-if trigger == 0:
+# Send an SMS 
+if send_msg:
     print("Send SMS")
     send_sms_msg(volts, startup_datetime)
 
-# Send a pybytes message every 2 intervals
-trigger = int_count % 2
-if trigger == 0:
+# Send a pybytes message
+if send_msg:
     print("Call home to pybytes...")
     conf = PybytesConfig().read_config()
     pybytes = Pybytes(conf)
@@ -507,12 +485,6 @@ if trigger == 0:
     # Disconnect from pybytes at the end of the program, not here
 
 
-# Increment the counter.
-int_count += 1
-pycom.nvs_set('int_counter', int_count)
-print("Interval counter: ", int_count)
-
-
 #################################### Network Connection #############################################################
 print("Connecting to the network")
 #connect_to_wifi()
@@ -531,9 +503,6 @@ connect_to_lte_data()
 if not lte.isconnected():
     print("Did not connect to lte data.  Shutting down...")
     shutdown()      # Wait for the next scheduled reset
-
-
-
 
 ################################### DS3231 Synchronization with NTP server ##################################################
 # Synchronize the DS3231 clock with NTP on the first day of the month
@@ -661,8 +630,10 @@ except Exception as e:
     print("pybytes.disconnect(): ", e)
 
 # Picture transfer is complete so disconnect from the network
-#wlan.disconnect()
-lte.deinit(detach=True,reset=True)
+#if wlan.isconnected():
+#    wlan.disconnect()
+if lte.isattached():
+    lte.deinit(detach=True,reset=True)
 
 print("Network disconnected, going to sleep")
 
