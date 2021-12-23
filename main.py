@@ -77,7 +77,7 @@ def set_next_alarm():
 
     alarm_interval = 4    # number of hours between DS3231 interrupts
 
-    # Calculate the next alarm hour based on intervals from midnight (e.g. 0, 4, 8, 12, ...)
+    # Calculate the next alarm hour based on intervals from midnight (e.g. 0000, 0400, 0800, 1200, 1600, 2000)
     #   Note: time is Zulu.  0hrs Z is 1900hrs EST (2000hrs EDT)
     next_hour = (startup_hour // alarm_interval) * alarm_interval + alarm_interval
     next_hour = next_hour % 24
@@ -450,8 +450,8 @@ string_volts = str(integer_volts)
 ################# Send an SMS and/or a Pybytes message ###########################
 print("Send an SMS and/or Pybytes message as needed")
 send_msg = False
-# Send a message if the current hour is after 4PM (Z) and at or before 8PM (Z)
-if startup_datetime[4] > 16 and startup_datetime[4] <= 20:
+# Send a message if the current hour is after 7AM (Z) and at or before 9AM (Z) (between 3AM and 5AM EST)
+if startup_datetime[4] > 7 and startup_datetime[4] <= 9:
     send_msg = True
 
 # Send an SMS 
@@ -632,8 +632,13 @@ except Exception as e:
 # Picture transfer is complete so disconnect from the network
 #if wlan.isconnected():
 #    wlan.disconnect()
-if lte.isattached():
-    lte.deinit(detach=True,reset=True)
+
+try:
+    if lte.isattached():
+        print("Deinit the LTE modem")
+        lte.deinit(detach=True,reset=True)
+except Exception as e:
+    print("Deinint LTE error: ", e)
 
 print("Network disconnected, going to sleep")
 
