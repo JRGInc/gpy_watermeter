@@ -3,6 +3,7 @@ import machine                  # for machine.idle when using wlan
 from machine import Pin, I2C    # To control the pin that RESETs the ESP32-CAM, I2C for RTC
 from machine import UART        # Receiving pictures from the ESP32-CAM
 from machine import ADC         # Battery voltage measurement
+from machine import WDT         # Watch dog timer
 from network import WLAN        # Connecting with the WiFi; Will not be needed when connecting with LTE
 from network import LTE         # Connect to network using LTE
 import base64                   # For encoding the picture
@@ -19,13 +20,18 @@ from _pybytes_config import PybytesConfig
 pycom.heartbeat(False)
 
 
-timezone = -5 # est: -5   edt: -4
-
 # global LTE object
-lte = LTE()
+try:
+    # Wake up once per 4 hrs, do some processing (18 minutes), deepsleep for 3 hrs, 42 min.
+    #   During the sleep the modem will go into a low power stat but staty attached to the network.
+    lte = LTE(psm_period_value=4, psm_period_unit=LTE.PSM_PERIOD_1H,
+          psm_active_value=3, psm_active_unit=LTE.PSM_ACTIVE_6M )
+    print("lte power saving mode parameters: ", lte.psm())
+except Exception as e:
+    print("Create lte object error: ", e)
 
 # Establish the WiFi object as a station; External antenna
-wlan = WLAN(mode=WLAN.STA,antenna=WLAN.EXT_ANT,max_tx_pwr=30)  #range is 8 to 78
+#wlan = WLAN(mode=WLAN.STA,antenna=WLAN.EXT_ANT,max_tx_pwr=30)  #range is 8 to 78
 
 i2c = I2C(0, I2C.MASTER, baudrate=100000)  # use default pins P9 and P10 for I2C
 ds3231 = DS3231(i2c)
@@ -75,14 +81,14 @@ def set_next_alarm():
 
     print("startup time: ", startup_datetime)
 
-    alarm_interval = 4    # number of hours between DS3231 interrupts
+    if startup_hour < 7 or startup_hour >= 19:
+        next_hour = 7
+    else:
+        next_hour = 19
 
-    # Calculate the next alarm hour based on intervals from midnight (e.g. 0000, 0400, 0800, 1200, 1600, 2000)
-    #   Note: time is Zulu.  0hrs Z is 1900hrs EST (2000hrs EDT)
-    next_hour = (startup_hour // alarm_interval) * alarm_interval + alarm_interval
-    next_hour = next_hour % 24
     # Arbitrary minute
-    next_minute = 5
+    next_minute = 17
+
 
     alarm = [None, None, None, None, next_hour, next_minute, 0, None]  # Alarm when hours, minutes and seconds (0) match
     alarm_datetime = tuple(alarm)
@@ -96,38 +102,24 @@ def set_next_alarm():
     return startup_datetime
 
 
-
-
-def connect_to_wifi():
-    try:
-        wlan.connect(ssid='JRG Guest', auth=(WLAN.WPA2, '600guest'), timeout=10000)
-        while not wlan.isconnected():
-            machine.idle()
-
-    except Exception as e:
-        print("Exception in connect_to_wifi()")
-        print(e)
-        print("Shutting down...")
-        shutdown()    
-
-    print("Connected to wifi: ", wlan.ifconfig())
-
-
 def attach_to_lte():
     return_val = 0  # Initialize as 'Failed to attach'
 
-    # First, enable the module radio functionality and attach to the LTE network
+    # Attach to the LTE network
+    max_trys = 5
+    max_checks = 15
     try:
         attach_try = 1
-        while attach_try < 5:
+        while attach_try <= max_trys:
             lte.attach(apn="wireless.dish.com",type=LTE.IP)  # Ting using T-Mobile
-            print("attaching..",end='')
+            print("attaching...")
 
-            attempt = 0
-            while attempt < 15:
+            check = 0
+            while check < max_checks:
                 if not lte.isattached():
-                    print(lte.send_at_cmd('AT!="fsm"'))         # get the System FSM
-                    attempt += 1
+                    #print(lte.send_at_cmd('AT!="fsm"'))         # get the System FSM
+                    check += 1
+                    print("Attempt: ", attach_try, " Check: ",check," of ",max_checks, " checks")
                     utime.sleep(5.0)
                 else:
                     print("attached!")
@@ -137,11 +129,18 @@ def attach_to_lte():
                 return_val = 1    # update return_val to indicate successful attach
                 break
             else:
-                print("Attempt #%d failed. Try attaching again!" %(attach_try))
+                if attach_try == max_trys:
+                    print("Attempt #%d failed. Done." %(attach_try))
+                else:
+                    print("Attempt #%d failed. Try attaching again!" %(attach_try))
                 attach_try += 1.0
-                utime.sleep(10)
+                try:
+                    lte.reset()
+                except Exception as e:
+                    print("lte reset error: ", e)
+                utime.sleep(5)
     except Exception as e:
-        print("Exception in s.sendall()")
+        print("LTE attach exception: ", e)
         print(e)
 
     # If the GPy failed to connect to the LTE network return an error code
@@ -153,10 +152,13 @@ def attach_to_lte():
 
 def connect_to_lte_data():
     return_val = 0
-    # Once the GPy is attached to the LTE network, start a data session using lte.connect()
+    # Start a data session using lte.connect()
     connect_try = 0
     while connect_try < 10:
-        lte.connect()
+        try:
+            lte.connect()
+        except Exception as e:
+            print("LTE connect() exception: ", e)
         print("connecting [##",end='')
 
         # Check for a data connection
@@ -192,7 +194,7 @@ def connect_to_lte_data():
     return return_val
 
 
-def send_sms_msg(voltage, datetime):
+def send_sms_msg(station_id, voltage, datetime):
     ################## Send SMS ################################
     phone_number = 7623204402
 
@@ -210,18 +212,13 @@ def send_sms_msg(voltage, datetime):
 
     #print(sms_message)
 
-    attach_to_lte()
-    if lte.isattached():
+    try:
         print('sending an sms', end=' '); ans=lte.send_at_cmd(sms_message).split('\r\n'); print(ans)
-        #lte.detach()   # Do not detatch from LTE.  If the attach was
-                        #   successful, stay attached to support the picture transfer
-    else:
-        print("Did not attach to the LTE system so did not send an sms")
+    except Exception as e:
+        print("SMS send failed: ", e)
 
 
-
-
-def process_picture(picture_len_int):
+def process_picture(picture_len_int, station_id, time_stamp):
     buf = bytearray(picture_len_int)
     mv = memoryview(buf)
 
@@ -257,7 +254,7 @@ def process_picture(picture_len_int):
         response = requests.post(url, headers=headers, data=data_file)
         print(response.text)  # Prints the return filename from the server in json format
     except Exception as e:
-        print(e)
+        print(e, "Try sending once more")
 
         # try once more
         utime.sleep(5)
@@ -265,7 +262,7 @@ def process_picture(picture_len_int):
             response = requests.post(url, headers=headers, data=data_file)
             print(response.text)  # Prints the return filename from the server in json format
         except Exception as e:
-            print(e)   
+            print(e, "Failed again")   
 
 
 
@@ -359,8 +356,12 @@ def get_id():
     #   is also part of the station name.
     #   In order to deploy identical code to all meter sensors, this lookup table containing all of the station IDs and
     #   IMEIs is needed.
+
     imei = lte.imei()
-    if imei == '354347091855384':
+
+    if imei == '354347091116118':
+        id = 29
+    elif imei == '354347091855384':
         id = 30
     elif imei =='354347098256859':
         id = 31
@@ -370,17 +371,190 @@ def get_id():
         id = 33
     elif imei == '354347090353712':
         id = 34
+
     else:
         id = 10
 
     print("IMEI: ",imei," Station: ",id)
 
     return id
+
+
+def transmit_picture(volts):
+    # Attach to the LTE network.
+    if not lte.isattached():
+        print("Attach to the LTE network")
+        attach_to_lte()
+
+    # If the modem is still not attached to the LTE network, shut down
+    if not lte.isattached():
+        print("Shutting down.  Better luck next reset.")
+        shutdown()     # Wait for the next scheduled reset
+
+
+    # While attached to the LTE network and before making a data connection, execute commands that use AT modem calls
+    #   If the LTE modem is already connected, suspend the PPP session while executing AT commands
+    # Assign the Station ID number (0-99)
+
+    if(lte.isconnected()):
+        lte.pppsuspend()
+        print("PPP session suspended")
+
+    station_id = get_id()
+
+    print("Send an SMS once a day")
+    # Send a message if the current hour is between midnight and noon (Z) (between 1900 and 0700 EST)
+    #   This is only executed if the interrupt is caused by the DS3231.
+    print("Startup hour: ", startup_datetime[4])
+    if startup_datetime[4] < 12:
+    #if startup_datetime[4] >= 12:
+        print("Sending an SMS notification")
+        send_sms_msg(station_id, volts, startup_datetime)
+    else:
+        print("Not sending an SMS notification")
+
+    try:
+        lte.pppresume()
+        print("PPP session resumed")
+    except Exception as e:
+        print("PPP session resume error: ", e)
+
+    #print("For testing, send the SMS anyway...")
+    #send_sms_msg(station_id, volts, startup_datetime)
+
+    # Now make an LTE data connection
+    if not lte.isconnected():
+        print("Make LTE data connection")
+        connect_to_lte_data()
+
+    # If the modem still does not have a data connection, shut down
+    if not lte.isconnected():
+        print("Did not connect to lte data.  Shutting down...")
+        shutdown()      # Wait for the next scheduled reset
+
+    print("Connection to the network is complete")
+
+
+
+    ################################### DS3231 Synchronization with NTP server ##################################################
+    # Synchronize the DS3231 clock with NTP on the first day of the month
+    #   or if the year is wrong (usually on first start or backup battery is replaced)
+    #   startup_datetime[0]  - year
+    #   startup_datetime[2]  - day
+    #   startup_datetime[4]  - hour
+    #   startup_datetime[5]  - minute
+    #  Note: sync_clock() also updates the next alarm time
+    if(startup_datetime[0] < 2021 or startup_datetime[2] == 1):
+        sync_clock()
+    else:
+        print("DS3231: no update needed")
+
+    # DS3231 time:
+    # datetime[0] year
+    # datetime[1] month
+    # datetime[2] date
+    # datetime[3] weekday
+    # datetime[4] hour
+    # datetime[5] minute
+    # datetime[6] second
+    datetime = ds3231.datetime()
+    print('DS3231 time:', ds3231.datetime())
+
+    time_stamp = '{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}'.format(datetime[0], datetime[1], datetime[2], datetime[4], datetime[5], datetime[6])
+    camera_time_stamp = '{:04d}{:02d}{:02d}{:02d}{:02d}'.format(datetime[0], datetime[1], datetime[2], datetime[4], datetime[5])
+    #print("Timestamp", time_stamp)
+    #print("CameraTimestamp", camera_time_stamp)
+
+    # Picture filename.  Transmit this to the ESP32-CAM. It is used for the SD Card filename on the ESP32-CAM
+    picture_filename = str(station_id) + '_' + camera_time_stamp + '_' + string_volts + '\0'
+    print(picture_filename)  # Print the filename to make sure it is properly formatted
+
+    # For testing only.  Print a string to the GPy terminal
+    print('new picture')
+
+    # Parse through the data that follows the ESP32-CAM bootup transmission to find the keyword, 'ready'
+
+    # Transmit 'Hello' until 'ready' is received
+    keyword = b'ready'  # Expected word from the ESP32-CAM
+    utime.sleep(1)
+
+    camera_connect = 0
+    while camera_connect < 3:
+        print("Camera connect attempt")
+        print(camera_connect + 1)
+
+        # Toggle the ESP32-CAM RESET line to initiate the picture capture process
+        camera_trigger(0)
+        utime.sleep_ms(10)
+        camera_trigger(1)
+
+        # Send a greeting followed by reading the reply
+        reply_count = 0
+        while reply_count < 50:
+            uart.write('Hello\0')
+            utime.sleep_ms(200)
+            reply = uart.readline()
+            print(reply)
+            if reply == keyword:
+                    print("found the keyword")  # The word 'ready' was received
+                    break
+            reply_count += 1
+        print("Completed attempt to find the keyword")
+        if reply == keyword:
+            break
+        camera_connect += 1
+        utime.sleep(5)
+
+    if reply == keyword:
+        print("send the picture filename")
+    else:
+        print("The camera did not connect.  Connect to pybytes...")
+        connect_to_pybytes(volts)
+
+    # Send the picture filename to the ESP32-CAM.  This filename will be used
+    #   by the ESP32-CAM to store the picture to its local SD-Card.
+
+    utime.sleep_ms(200)
+    uart.write(picture_filename)
+
+
+
+    # Read the picture length from the ESP32-Cam.  Convert the value to an integer
+    picture_len_try = 0
+    received_picture_len = False
+    while picture_len_try < 50:
+        picture_len = uart.readline()
+        try:
+            # Strip the trailing whitespace (e.g. \r\n)
+            picture_len_bytes = picture_len.strip()
+            # Cast the value to an integer.  If the case is successful, the picture length is a number
+            picture_len_int = int(picture_len_bytes)
+            received_picture_len = True
+            break
+        except:
+            print('The picture length is not a number')
+        picture_len_try += 1
+        utime.sleep_ms(100)
+
+    if received_picture_len == False:
+        shutdown()
+    else:
+        print(picture_len_int)
+
+
+    print('Begin transfer')
+    process_picture(picture_len_int, station_id, time_stamp)
+
+    # For testing only.  Indicates that the picture processing (capture, encode, transmit) is complete
+    print('end transfer')
+
+    connect_to_pybytes(volts)
+
     
 
 def gpy_reset():
-    # Pull the RESET pin LOW to reset the GPy
     gpy_reset_trigger.value(0)
+
 
 # When the DS3231 RTC pulls the P22 LOW, this handler pulls the gpy_reset_trigger LOW.  The GPY is reset.
 # Upon reset, the GPY clears the DS3231 interrupt request before configuring P22 as an interrupt source
@@ -395,23 +569,103 @@ def gpy_reset():
 #    Therefore, connect the DS3231 RESET tp P22.  When P22 detects an RTC reset, it in turn pulls P23 (gpy_reset_trigger) LOW
 #    to reset the GPY.  On bootup, clear the RTC reset condition and then reconfigure P22 as an interrupt source.
 def ds3231_int_handler(arg):
-   gpy_reset()
+    print("RTC interrupt occurred")
+    utime.sleep(5)  # Sleep a few seconds so the print statement has time to transmit
+
+    # Set an NVRAM flag indicating that a DS3231 interrupt occurred
+    try:
+        pycom.nvs_set("DS3231", 1)
+    except Exception as e:
+        print("Did not set the DS3231 key: ", e)
+        utime.sleep(5)
+
+    # Pull the RESET pin LOW to reset the GPy
+    gpy_reset()
 
 
 #   For shutdown, put the GPy in a sleep mode for some time longer than the normal RTC delay.  For example, if the
-#      RTC initiates a RESET every six hours, put the GPy in a sleep mode for 6hrs and 15 minutes.  If all else
+#      RTC initiates a RESET every twelve hours, put the GPy in deepsleep mode for 12hrs and 15 minutes.  If all else
 #      fails, the GPy will reboot at the end of the software delay
 def shutdown():
-    # Delay.  Expect that the RTC will reset the GPY before this delay expires.
-    #    Delay 6hrs and 15 minutes (22500 seconds) assuming that the RTC interrupts every 6 hours
-    #machine.deepsleep(22500000)
-    utime.sleep(22500)
+    uart.deinit()
 
-    # For testing, transmit more frequently
-    #utime.sleep(300)
+    try:
+        if lte.isattached():
+            print("Keep the LTE modem active - do not deinit")
+            #print("Deinit the LTE modem, stay attached")
+            #lte.deinit(detach=True,reset=False)  # Call before deepsleep to save power
+            #lte.deinit(detach=False,reset=False) # This does not save power but remains connected (attached?) to the LTE system
+        else:
+            print("LTE modem is detached")
+    except Exception as e:
+        print("Deinint LTE modem error: ", e)
+
+    # Delay.  Expect that the RTC will reset the GPY before this delay expires.
+    #print("... entering deepsleep")
+    #machine.deepsleep(720 * 60 * 1000) # Deep sleep for 12hrs, 15 minutes (720 minutes)
+
+    # Delay
+    print("... enter sleep mode")
+    utime.sleep(750 * 60) # sleep for 12hrs 30 minutes (Note: the DS3231 interrupts every 12 hrs so this sleep period should not expire)
+    #machine.sleep(5 * 60000)
+    #machine.deepsleep(5 * 60 * 10000)
+
+    print("exit sleep")
+    utime.sleep(3)
     
     # Pull the RESET pin LOW to reset the GPy
     gpy_reset()
+
+
+def connect_to_pybytes(battery_voltage):
+# Connect to Pybytes and send a signal
+    conf = PybytesConfig().read_config()
+    try:
+        pybytes = Pybytes(conf)
+    except Exception as e:
+        print("Did not instantiate the pybytes object")
+
+    if not pybytes.isconnected():
+        print("Connect to Pybytes...")
+        try:
+            pybytes.start()
+        except Exception as e:
+            print("Did not connect to Pybytes, try once more")
+            utime.sleep(10)
+
+    # Try to connect a second time
+    if not pybytes.isconnected():
+        print("Try connecting to Pybytes a second time...")
+        conf = PybytesConfig().read_config()
+        pybytes = Pybytes(conf)
+        try:
+            pybytes.start()
+        except Exception as e:
+            print("Did not connect to Pybytes, shut down: ", e)
+
+
+    if pybytes.isconnected():
+        print("Sending data to pybytes")
+        volt_string = "{:.2f}"
+        v = volt_string.format(battery_voltage)
+        print("Voltage value sent to Pybytes: ", v)
+        pybytes.send_signal(0, v)
+        utime.sleep(3)
+
+        # Set the watchdog timer - overrides the bootup Pybytes watchdog setting (Could disable the Pybytes watchdog)
+        #print("Set the watchdog timer")
+        wdt = WDT(timeout=1440 * 60 * 1000)  # 60*1000=1minute; 24 hour watchdog timeout
+        wdt.feed()
+    else:
+        # If not connected to pybytes, deinit the modem.  Sleep until the next time the RTC interrupts.
+        print("Network disconnected, going to sleep")
+
+    print("Going to sleep")
+    utime.sleep(3)
+
+    shutdown()
+
+ 
 
 #########################################################
 ################ End function definitions ###############
@@ -420,14 +674,15 @@ def shutdown():
 
 ################################################ Entry Point ############################################
 # For testing only.  A message and a delay
-print("Starting ...")
-utime.sleep(2)
+print("Version 1.00 starting ...")
+utime.sleep(1)
 
-# Assign the Station ID number (0-99)
-station_id = get_id()
+reset_cause = machine.reset_cause()
+wakeup_reason = machine.wake_reason()
+print("reset_cause: ", reset_cause)
+print("wakeup_reason: ", wakeup_reason[0])
 
-
-
+######################## Set the DS3231 alarm for the next interrupt ##############################
 # Before any other action, set the next DS3231 alarm time and clear the DS3231 interrupt request.  If any of the functions hang,
 #   the DS3231 will reset the GPy at the next alarm.
 startup_datetime = set_next_alarm()
@@ -436,8 +691,13 @@ startup_datetime = set_next_alarm()
 ds3231_trigger = Pin('P22', mode=Pin.IN, pull=None)  # external pull up resistor on ds3231 reset pin
 ds3231_trigger.callback(Pin.IRQ_FALLING, ds3231_int_handler)
 
+# Configure P22 as a source for sleep wakeup when using machine.deepsleep()
+pin_list = ['P22']
+machine.pin_sleep_wakeup(pin_list, machine.WAKEUP_ALL_LOW, False)
 
-######################## Read the battery voltage ##############################
+
+
+######################## Read the battery voltage ############################## 
 volts = battery_voltage()
 print("Voltage = %5.2f V" % (volts))
 
@@ -447,199 +707,35 @@ integer_volts = int(rounded_volts)    # for rounded_value = 648.  integer_value 
 string_volts = str(integer_volts)
 
 
-################# Send an SMS and/or a Pybytes message ###########################
-print("Send an SMS and/or Pybytes message as needed")
-send_msg = False
-# Send a message if the current hour is after 7AM (Z) and at or before 9AM (Z) (between 3AM and 5AM EST)
-if startup_datetime[4] > 7 and startup_datetime[4] <= 9:
-    send_msg = True
-
-# Send an SMS 
-if send_msg:
-    print("Send SMS")
-    send_sms_msg(volts, startup_datetime)
-
-# Send a pybytes message
-if send_msg:
-    print("Call home to pybytes...")
-    conf = PybytesConfig().read_config()
-    pybytes = Pybytes(conf)
-    if not pybytes.isconnected():
-        try:
-            print("Attempt to connect to pybytes")
-            pybytes.connect()
-            print("connected to pybytes")
-        except Exception as e:
-            print("Did not connect to pybytes: ", e)
-    else:
-        print("Already connected")
-
-    if pybytes.isconnected():
-        print("Sending data to pybytes")
-        volt_string = "{:.2f}"
-        v = volt_string.format(volts)
-        try:
-            pybytes.send_signal(0, v)  # Send voltage message to channel 0
-        except Exception as e:
-            print(e)
-    # Disconnect from pybytes at the end of the program, not here
-
-
-#################################### Network Connection #############################################################
-print("Connecting to the network")
-#connect_to_wifi()
-
-# The modem my already be attached to the lte network from a previous SMS or Pybytes transmission
-
-if not lte.isattached():
-    attach_to_lte()
-
-if not lte.isattached():
-    print("Shutting down.  Better luck next reset.")
-    shutdown()     # Wait for the next scheduled reset
-
-connect_to_lte_data()
-
-if not lte.isconnected():
-    print("Did not connect to lte data.  Shutting down...")
-    shutdown()      # Wait for the next scheduled reset
-
-################################### DS3231 Synchronization with NTP server ##################################################
-# Synchronize the DS3231 clock with NTP on the first day of the month
-#   or if the year is wrong (usually on first start or backup battery is replaced)
-#   startup_datetime[0]  - year
-#   startup_datetime[2]  - day
-#   startup_datetime[4]  - hour
-#   startup_datetime[5]  - minute
-#  Note: sync_clock() also updates the next alarm time
-if(startup_datetime[0] < 2021 or startup_datetime[2] == 1):
-    sync_clock()
-else:
-    print("DS3231: no update needed")
-
-# DS3231 time:
-# datetime[0] year
-# datetime[1] month
-# datetime[2] date
-# datetime[3] weekday
-# datetime[4] hour
-# datetime[5] minute
-# datetime[6] second
-datetime = ds3231.datetime()
-print('DS3231 time:', ds3231.datetime())
-
-time_stamp = '{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}'.format(datetime[0], datetime[1], datetime[2], datetime[4], datetime[5], datetime[6])
-camera_time_stamp = '{:04d}{:02d}{:02d}{:02d}{:02d}'.format(datetime[0], datetime[1], datetime[2], datetime[4], datetime[5])
-#print("Timestamp", time_stamp)
-#print("CameraTimestamp", camera_time_stamp)
-
-# Picture filename.  Transmit this to the ESP32-CAM. It is used for the SD Card filename on the ESP32-CAM
-picture_filename = str(station_id) + '_' + camera_time_stamp + '_' + string_volts + '\0'
-print(picture_filename)  # Print the filename to make sure it is properly formatted
-
-# For testing only.  Print a string to the GPy terminal
-print('new picture')
-
-# Parse through the data that follows the ESP32-CAM bootup transmission to find the keyword, 'ready'
-
-# Transmit 'Hello' until 'ready' is received
-keyword = b'ready'  # Expected word from the ESP32-CAM
-utime.sleep(1)
-
-camera_connect = 0
-while camera_connect < 3:
-    print("Camera connect attempt")
-    print(camera_connect + 1)
-
-    # Toggle the ESP32-CAM RESET line to initiate the picture capture process
-    camera_trigger(0)
-    utime.sleep_ms(10)
-    camera_trigger(1)
-
-    # Send a greeting followed by reading the reply
-    reply_count = 0
-    while reply_count < 50:
-        uart.write('Hello\0')
-        utime.sleep_ms(200)
-        reply = uart.readline()
-        print(reply)
-        if reply == keyword:
-                print("found the keyword")  # The word 'ready' was received
-                break
-        reply_count += 1
-    print("Completed attempt to find the keyword")
-    if reply == keyword:
-        break
-    camera_connect += 1
-    utime.sleep(5)
-
-if reply == keyword:
-    print("send the picture filename")
-else:
-    print("The camera did not connect.  Shutting down...")
-    shutdown()
-
-# Send the picture filename to the ESP32-CAM.  This filename will be used
-#   by the ESP32-CAM to store the picture to its local SD-Card.
-
-utime.sleep_ms(200)
-uart.write(picture_filename)
-
-
-
-# Read the picture length from the ESP32-Cam.  Convert the value to an integer
-picture_len_try = 0
-received_picture_len = False
-while picture_len_try < 50:
-    picture_len = uart.readline()
-    try:
-        # Strip the trailing whitespace (e.g. \r\n)
-        picture_len_bytes = picture_len.strip()
-        # Cast the value to an integer.  If the case is successful, the picture length is a number
-        picture_len_int = int(picture_len_bytes)
-        received_picture_len = True
-        break
-    except:
-        print('The picture length is not a number')
-    picture_len_try += 1
-    utime.sleep_ms(100)
-
-if received_picture_len == False:
-    shutdown()
-else:
-    print(picture_len_int)
-
-
-print('Begin transfer')
-process_picture(picture_len_int)
-
-# Turn off the UART port
-uart.deinit()
-
-# For testing only.  Indicates that the picture processing (capture, encode, transmit) is complete
-print('end transfer')
-
-
-
-# pybytes is not defined for every picture transfer.  Use a try: structure to disconnect from pybytes
+# Read the DS3231 reset code from NVRAM
+ds3231_reset = '0'
 try:
-    if pybytes.isconnected():
-        print("Disconnect from pybytes")
-        pybytes.disconnect()
-except Exception as e:        
-    print("pybytes.disconnect(): ", e)
-
-# Picture transfer is complete so disconnect from the network
-#if wlan.isconnected():
-#    wlan.disconnect()
-
-try:
-    if lte.isattached():
-        print("Deinit the LTE modem")
-        lte.deinit(detach=True,reset=True)
+    ds3231_reset = pycom.nvs_get("DS3231")
+    print("DS3231 reset code: ", ds3231_reset)
 except Exception as e:
-    print("Deinint LTE error: ", e)
+    print("Failed to read DS3231_Interrupt from NVRAM: ", e)
+    try:
+        pycom.nvs_set("DS3231", 0)
+    except Exception as e:
+        print("Did not set the DS3231 key: ", e)
 
-print("Network disconnected, going to sleep")
+if ds3231_reset is None:
+    ds3231_reset = 0
+    try:
+        pycom.nvs_set("DS3231", 0)
+    except Exception as e:
+        print("Did not set the DS3231 key: ", e)
 
-shutdown()
+
+#if reset_cause == 3 and wakeup_reason[0] != 2:
+if ds3231_reset == 1:
+    print("DS3231 interrupt")
+    # Reset the DS3231 reset code
+    try:
+        pycom.nvs_set("DS3231", 0)
+    except Exception as e:
+        print("Did not set the DS3231 key: ", e)
+    transmit_picture(volts)
+else:
+    print("The DS3231 did not interrupt, connecting to Pybytes")
+    connect_to_pybytes(volts)
